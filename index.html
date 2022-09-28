@@ -1224,6 +1224,43 @@
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/markdown/markdown.js"></script>
+
+<script>
+    // Full list of configuration options available here:
+    // https://github.com/hakimel/reveal.js#configuration
+    Reveal.initialize({
+
+        controls: true,
+        progress: true,
+        history: false,
+        center: true,
+        slideNumber: 'c',
+        rollingLinks: false,
+        keyboard: true,
+        mouseWheel: false,
+        fragmentInURL: false,
+        hashOneBasedIndex: false,
+        pdfSeparateFragments: true,
+        overview: true,
+        width: 1075,
+        margin: 0.00,
+
+        transition: 'slide',
+        transitionSpeed: 'default',
+
+        markdown: {
+            gfm: true
+        },
+        plugins: [ RevealMarkdown, RevealHighlight],
+
+        dependencies: [
+        ]
+
+    });
+</script>
 
 </body>
 </html>
