@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="author" content="Ivan Lyagaev">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <style type="text/css">
+        .underline { text-decoration: underline; }
+    </style>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.css"/>
+    <link rel="stylesheet" href="styles/tinkoff.css" id="theme"/>
+    <link rel="stylesheet" href="styles/extra.css"/>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+    <link rel="stylesheet" href="styles/monokai.css"/>
+
+    <title>О Дивный Контекстный Мир</title>
+</head>
+<body>
+
+<div class="reveal">
+    <div class="slides">
+        <section id="sec-title-slide" data-background="rgb(255, 221, 45)" data-state="title-slide">
+            <img src="images/logo.svg" id="title-img">
+            <h2 class="title">О Дивный Контекстный Мир</h2>
+            <h6 class="author">Иван Лягаев</h6>
+        </section>
+        <section class="about-slide" data-background-color="#757C8D" style="height: 600px;">
+            <div class="block">
+                <div id="about-column">
+                    <img src="images/logo-yel.svg">
+                </div>
+                <div id="about-block">
+                    <img src="images/me.png">
+
+
+                    <p>Иван Лягаев | Ведущий Scala разработчик</p>
+
+                    <div id="about-contacts">
+                        <div class="about-contacts-line">
+                            <img src="images/at.svg">
+                            <p>i.lyagaev@tinkoff.ru</p>
+                        </div>
+                        <div class="about-contacts-line">
+                            <img src="images/gh.png">
+                            <p>FireFoxIL</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <!--Intro-->
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+                    ## План
+
+                    - Стандартный подход - Контекст, как переменная
+                      - `ThreadLocal`
+                      - `MDC`
+                      - `scala.concurrent.Future`
+                      - `cats.effect.IO, IOLocal`
+
+                    ---
+
+                    - Функциональный подход - Контекст, как аргумент функции
+                      - `cats.data.Reader`
+                      - `cats.data.ReaderT`
+
+                    ---
+
+                    - Tagless Final и Абстракции для работы с контекстом
+                      - `tofu.WithContext`
+                      - `tofu.WithProvide`
+                      - `tofu.logging.Logging`
+
+                </textarea>
+            </section>
+        </section>
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+
+                    Мы хотим понимать, что происходит с запросом на наш backend сервис
+
+                    ---
+
+                    Иначе говоря, мы хотим отвечать на вопрос - Что происходило во время запроса?
+
+                    ---
+
+                    Помогает нам с этим _контекст_ запроса
+
+                    ---
+
+                    Будем называть _контекстом_ запроса любую вспомогательная информацию о запросе,
+                    доступную на протяжении всего времени обработки
+
+                    ---
+
+                    Контекст может содержать:
+                    - Идентификатор запроса
+                    - Начало выполнение запроса
+                    - Инициирующую систему
+                    - и т.д.
+
+                    ---
+
+                    Контекст позволяет обеспечить телеметрию запроса:
+                    - логирование
+                    - подсчет метрик
+                    - трейсинг
+
+                </textarea>
+            </section>
+        </section>
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+                    Самый простой способ научиться передавать контекст - использовать переменную
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15|1|4|8-9|1-15]
+                    var context = Map.empty[String, String]
+
+                    def doLogic(): Unit = {
+                      println(s"${context.mkString("[", ",","]")} Logic")
+                    }
+
+                    def handleRequest(req: Request): Response = {
+                      val requestId: String = getOrCreate(req)
+                      context = Map("requestId" -> requestId)
+                      doLogic()
+                      Response.Ok
+                    }
+                    ```
+
+                    ---
+
+                    ```bash
+                    [requestId -> 12345] Logic
+                    ```
+
+                    ---
+
+                    Минусы:
+
+                    - В многопоточной среде такой подход не будет работать
+                    - Переменная должна быть проинициализирована значением до начала обработки запроса
+                    - Происходит явная работа с контекстом на уровне логгирования
+
+                    ---
+
+                    Для многопоточной среды в `java` принято использовать `ThreadLocal` -
+                    локальные переменные для каждого потока
+
+                    ---
+
+                    На этом подходе выстроен инструмент для логирования - _Mapped Diagnostic Context_ (MDC)
+
+                    ---
+
+                    Он представляет из себя изменяемую структуру вида `Map[String, String]`,
+                    которая хранится в `ThreadLocal`
+
+                    Каждый поток имеет свое значение MDC, которое он может независимо изменять
+
+                    ---
+
+                    `MDC` присутствует во всех библиотеках для логирования, в частности -
+                    в `slf4j` фасаде
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    import org.slf4j.{Logger, LoggerFactory, MDC}
+                    val logger: Logger = LoggerFactory.getLogger("Logger")
+
+                    def doLogic(): Unit = {
+                      logger.info("Doing some logic")
+                    }
+
+                    def handleRequest(req: Request): Response = {
+                      val requestId: String = getOrCreate(req)
+                      MDC.put("requestId", requestId)
+                      doLogic()
+                      Response.Ok
+                    }
+                    ```
+                    ---
+
+                    ```bash
+                    [requestId=12345] Doing some logic
+                    ```
+
+                    ---
+
+                    `MDC` отлично работает в многопоточной среде, когда мы выделяем на обработку
+                    запроса отдельный поток
+
+                    ---
+
+                    Более того, `MDC` еще неявно позволяет работать с логами. Нам остается только добавлять значения
+                    в самом начале обработке
+
+                    ---
+
+                    К сожалению, современные реактивные фреймворки не задействуют только один поток при обработке
+                    запросов
+
+                    В случае использование `scala.concurrent.Future`, `MDC` просто перестает работать
+
+                    ---
+
+                    При этом `Future` не дает никаких инструментом для работы с контекстом
+
+                    ---
+
+                    Единственный вариант здесь, делать свой проброс контекста - патчинг `ExecutionContext`, который
+                    при context-switch'е `Future` будет перекладывать значения ThreadLocal из одного треда в другой
+
+                    ---
+
+                    И даже такой подход не гарантирует протекания контекста одного запроса в исполнение другого
+
+                    ---
+
+                    К счастью, в Scala это не единственный способ исполнения запросов на нескольких потоков
+
+                    Например, библиотека `cats-effect` предоставляет возможность работы с контекстом
+
+                    ---
+
+                    `cats-effect` реализует рантайм для приложений, используя концепцию файберов
+
+                    Каждый запрос моделируется, как отдельное вычисление - файбер
+                    ---
+
+                    Файберы могут порождать дочерние вычисления, которые могут исполняться конкурентно
+
+                    Файбер - облегченный логический поток, из-за чего мы можем иметь в системе в несколько раз больше
+                    файбером, чем системных тредов
+
+                    ---
+
+                    При этом каждый файбер может иметь свой контекст - произвольную изменяющуюся структуру данных,
+                    которая автоматически передается дочерним файберам
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait IOUserRepository {
+                      def get(id: UserId): IO[User]
+                    }
+
+                    trait IOMessageSender {
+                      def send(from: User, to: User, msg: Message): IO[Unit]
+                    }
+                    ```
+
+                    ---
+
+                    `IO` имеет метод `flatMap`
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait IO[+A] {
+                      def flatMap[B](f: A => IO[B]): IO[B]
+                    }
+                    ```
+
+                    Он позволяет последовательно композировать разные IO вычисления
+
+                    ---
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class IOMessageService(
+                      sender: IOMessageSender,
+                      users: IOUserRepository
+                    ) {
+                      def send(from: UserId, to: UserId, msg: Message): IO[Unit] = {
+                        users.getUser(from).flatMap { fromUser =>
+                          users.getUser(to).flatMap { toUser =>
+                            sender.send(fromUser, toUser, msg)
+                          }
+                        }
+                    }
+                    ```
+                    ---
+
+                    Можно использовать специальный синтаксический сахар - for-comprehension
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class IOMessageService(
+                      sender: IOMessageSender,
+                      users: IOUserRepository
+                    ) {
+                      def send(from: UserId, to: UserId, msg: Message): IO[Unit] =
+                        for {
+                          fromUser <- users.getUser(from)
+                          toUser   <- users.getUser(to)
+                          _        <- sender.send(fromUser, toUser, msg)
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+
+                    Для простоты работы с контекстом и сайд-эффектами -
+                    проще объявить свой фасад для логгирования возвращающий IO
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait IOLogger {
+                      def info(input: String): IO[Unit]
+                    }
+                    ```
+
+                    ---
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    import cats.effect.{IO, IOLocal}
+
+                    class LoggerImpl(
+                      local: IOLocal[Map[String, String]]
+                    ) extends IOLogger {
+
+                      def info(input: String): IO[Unit] =
+                       for {
+                         ctx <- local.get
+                         _   <- IO.println(s"[INFO] ${ctx.mkString("[", ",", "]")} $input")
+                       } yield ()
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    class IOUserRepository(
+                      delegate: IOUserRepository,
+                      logger: IOLogger
+                    ) extends IOUserRepository {
+
+                      def get(id: UserId): IO[User] =
+                        for {
+                          _    <- logger.info(s"Getting user=$id")
+                          user <- delegate.get(id)
+                        } yield user
+                      }
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    class IOMessageSender(
+                      delegate: IOMessageSender,
+                      logger: IOLogger
+                    ) extends IOMessageSender {
+                      def send(from: User, to: User, msg: Message): IO[Unit] =
+                        for {
+                          _ <- logger.info(s"Sending msg=$msg")
+                          _ <- delegate.send(from, to, msg)
+                          _ <- logger.info(s"Sent msg=$msg")
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    trait IOHttpHandler {
+                      def handle(req: Request): IO[Response]
+                    }
+                    ```
+
+                    ---
+
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    class IOMessageHttpHandler(
+                      srv: IOMessageService,
+                      local: IOLocal[Map[String, String]]
+                    ) extends IOHttpHandler {
+
+                      def handle(req: Request): IO[Response] = {
+                        for {
+                          requestId <- getOrCreate(req)
+                          _ <- local.set(Map("requestId" -> requestId))
+                          (from, to, msg) <- parse(req)
+                          _ <- srv.send(from, to, msg)
+                        } yield Response.Ok
+                      }
+                    }
+                    ```
+
+                    ---
+
+                    Пример логов:
+
+                    ```bash
+                    [INFO] [requestId -> "12345"] Getting user=1
+                    [INFO] [requestId -> "12345"] Getting user=2
+                    [INFO] [requestId -> "12345"] Sending msg=Message(Privet)
+                    [INFO] [requestId -> "12345"] Sent msg=Message(Privet)
+                    ```
+
+                    ---
+
+                    `IOLocal` позволяет работать с типизированным контекстом,
+                    который передается на все вычисление
+
+                    ---
+
+                    Все вроде бы все хорошо, но остается пара проблем:
+
+                    - Контекст должен быть чем-то проинициализирован. Отсюда нет гарантий, что его не забудут проставить
+                    - Есть вероятность, что поведет себя не так,как мы ожидаем. ([Issue #3100](https://github.com/typelevel/cats-effect/issues/3100))
+
+                    ---
+
+                    И главная проблема всех разобранных подходов - они неразрывно связаны с рантаймом
+
+                    А рантаймы довольно часто меняются
+                </textarea>
+            </section>
+        </section>
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+
+                    Давайте теперь попытаемся пойти с другой стороны и абстрагироваться
+                    от конкретного рантайма
+
+                    ---
+
+                    Начнем с другого простого способа гарантировано передать контекст -
+
+                    будем передавать его явно через аргументы функции
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    case class RequestContext(id: String)
+
+                    trait ArgUserRepository {
+                      def get(id: UserId)(ctx: RequestContext): User
+                    }
+
+                    trait ArgMessageSender {
+                      def send(from: User, to: User, msg: Message)(ctx: RequestContext): Unit
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class LoggingArgUserRepository(
+                      delegate: ArgUserRepository
+                    ) extends ArgUserRepository {
+
+                      def get(id: UserId)(ctx: RequestContext): User = {
+                        println(s"$ctx Getting user=$id")
+                        delegate.get(id)(ctx)
+                      }
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class LoggingArgMessageSender(
+                      delegate: ArgMessageSender
+                    ) extends ArgMessageSender {
+
+                      def send(from: User, to: User, msg: Message)
+                              (ctx: RequestContext): Unit = {
+                        println(s"$ctx Sending msg=$msg")
+                        delegate.send(from, to, msg)(ctx)
+                        println(s"$ctx Sent msg=$msg")
+                      }
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ArgMessageService(
+                      sender: ArgMessageSender,
+                      users: ArgUserRepository
+                    ) {
+                      def send(from: UserId, to: UserId, msg: Message)(ctx: RequestContext): Unit = {
+                        val fromUser = users.getUser(from)(ctx)
+                        val toUser   = users.getUser(to)(ctx)
+
+                        sender.send(fromUser, toUser, msg)(ctx)
+                      }
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait HttpHandler {
+                      def handle(req: Request): Response
+                    }
+
+                    class ArgMessageHttpHandler(srv: ArgMessageService)
+                      extends HttpHandler {
+
+                      def handle(req: Request): Response = {
+                        val (from, to, msg, ctx) = parse(req)
+                        srv.send(from, to, msg)(ctx)
+                        Response.Ok
+                      }
+                    }
+                    ```
+
+                    ---
+
+                    Теперь давайте возвращать не значение, а функцию от контекста
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait ArgUserRepository {
+                      def get(id: UserId): RequestContext => User
+                    }
+
+                    trait ArgMessageSender {
+                      def send(from: User, to: User, msg: Message): RequestContext => Unit
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ArgMessageService(
+                      sender: ArgMessageSender,
+                      users: ArgUserRepository
+                    ) {
+                      def send(
+                        from: UserId,
+                        to: UserId,
+                        msg: Message
+                      ): RequestContext => Unit = { ctx =>
+                        val fromUser = users.getUser(from)(ctx)
+                        val toUser   = users.getUser(to)(ctx)
+
+                        sender.send(fromUser, toUser, msg)(ctx)
+                      }
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ArgMessageHttpHandler(srv: ArgMessageService)
+                      extends HttpHandler {
+
+                      def handle(req: Request): Response = {
+                        val (from, to, msg, ctx) = parse(req)
+                        srv.send(from, to, msg)(ctx)
+                        Response.Ok
+                      }
+                    }
+                    ```
+
+                    ---
+
+                    Если приглядеться к функции `E => A`, то можно увидеть Reader монаду
+
+                    Она нам позволит уйти от явного проброса контекста
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    case class Reader[E, A](run: E => A)
+                    ```
+
+                    ---
+
+                    Мы точно также можем объявить `flatMap` метод
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    case class Reader[E, A](run: E => A) {
+                      def flatMap[B](f: A => Reader[E, B]): Reader[E, B] =
+                        Reader(e => f(run(e)))
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    type Context[A] = Reader[RequestContext, A]
+
+                    object Context {
+                      def ask: Context[RequestContext] =
+                        Reader(a => a)
+
+                      def lift[B](b: B): Context[B] =
+                        Reader(_ => b)
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    case class Reader[E, A](run: E => A)
+                    type Context[A] = Reader[RequestContext, A]
+
+                    trait ArgUserRepository {
+                      def get(id: UserId): Context[User]
+                    }
+
+                    trait ArgMessageSender {
+                      def send(from: User, to: User, msg: Message): Context[Unit]
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class LoggingArgUserRepository(
+                      delegate: ArgUserRepository
+                    ) extends ArgUserRepository {
+                      def get(id: UserId): Context[User] =
+                        for {
+                          ctx  <- Context.ask
+                          user <- Context.lift(
+                            println(s"$ctx Getting user=$id")
+                          )
+                        } yield user
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ArgMessageService(
+                      sender: ArgMessageSender,
+                      users: ArgUserRepository
+                    ) {
+                      def send(from: UserId, to: UserId, msg: Message): Context[Unit] =
+                        for {
+                          fromUser <- users.getUser(from)
+                          toUser   <- users.getUser(to)
+                          _ <- sender.send(fromUser, toUser, msg)
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+
+                    Теперь, давайте перейдем к асинхронной обработке
+
+                    Для этого нам понадобится `ReaderT` и типы высшего порядка
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    case class ReaderT[F[_], E, B](run: E => F[A]) {
+                      def flatMap[B](f: A => ReaderT[F, E, B])(
+                        implicit monad: Monad[F]
+                      ): ReaderT[F, E, B] =
+                        ReaderT { e =>
+                          monad.flatMap(run(e))(f(_).run(e))
+                        }
+                    }
+
+                    trait Monad[F[_]] {
+                      def flatMap[A, B](fa: F[A])(f: A => F[B]): F[B]
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    type ContextIO[B] = ReaderT[IO, RequestContext, B]
+
+                    object ContextIO {
+                      def ask: ContextIO[RequestContext] =
+                        ReaderT(a => IO.pure(a))
+
+                      def lift[B](io: IO[B]): ContextIO[B] =
+                        ReaderT(_ => io)
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait ContextIOUserRepository {
+                      def get(id: UserId): ContextIO[User]
+                    }
+
+                    trait ContextIOMessageSender {
+                      def send(from: User, to: User, msg: Message): ContextIO[Unit]
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait ContextIOLogger {
+                      def info(input: String): ContextIO[Unit]
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ContextIOLoggerImpl
+                      extends ContextIOLogger {
+
+                      def info(input: String): ContextIO[Unit] =
+                       for {
+                         ctx <- ContextIO.ask
+                         _   <- ContextIO.lift(
+                           IO.println(s"[INFO] ${ctx.mkString("[", ",", "]")} $input")
+                         )
+                       } yield ()
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    class ContextIOUserRepository(
+                      delegate: ContextIOUserRepository,
+                      logger: ContextIOLogger
+                    ) extends ContextIOUserRepository {
+
+                      def get(id: UserId): ContextIO[User] =
+                        for {
+                          _    <- logger.info(s"Getting user=$id")
+                          user <- delegate.get(id)
+                        } yield user
+                      }
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    class ContextIOMessageSender(
+                      delegate: ContextIOMessageSender,
+                      logger: ContextIOLogger
+                    ) extends ContextIOMessageSender {
+                      def send(from: User, to: User, msg: Message): ContextIO[Unit] =
+                        for {
+                          _ <- logger.info(s"Sending msg=$msg")
+                          _ <- delegate.send(from, to, msg)
+                          _ <- logger.info(s"Sent msg=$msg")
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    trait IOHttpHandler {
+                      def handle(req: Request): IO[Response]
+                    }
+
+                    class IOMessageHttpHandler(
+                      srv: ContextIOMessageService
+                    ) extends IOHttpHandler {
+
+                      def handle(req: Request): IO[Response] = {
+                        for {
+                          (from, to, msg, ctx) <- parse(req)
+                          _ <- srv.send(from, to, msg).run(ctx)
+                        } yield Response.Ok
+                      }
+                    }
+                    ```
+
+                    ---
+
+                    `Reader` и `ReaderT` хорошие абстракции для работы с контекстом
+
+                    - Они дают гарантию на передачу контекста, нужно явно "запустить" Reader
+                    - Если контекст неизменяемый, то есть строгие гарантии поведения в многопоточной среде
+
+                    ---
+
+                    Их имплементации доступны в библиотеке `cats` (не путать с `cats-effect`)
+
+                    ---
+
+                    К сожалению, есть только одна потенциальная проблема с таким подходом -
+                    дополнительные аллокации на создание `Reader` в каждом методе
+
+                    К счастью, это можно полечить специализированной имплементацией под конкретную `IO`
+                    монаду
+
+                </textarea>
+            </section>
+        </section>
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+                    Давайте чуть подробнее поглядим на все реализации наших интерфейсов
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    trait IOUserRepository {
+                      def get(id: UserId): IO[User]
+                    }
+
+                    trait ArgUserRepository {
+                      def get(id: UserId): Context[User]
+                    }
+
+                    trait ContextIOUserRepository {
+                      def get(id: UserId): ContextIO[User]
+                    }
+                    ```
+                    ---
+
+                    Все они отличаются одним параметром - контейнером возвращаемого значения
+
+                    Давайте выведем его в параметр интерфейса
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait UserRepository[F[_]] {
+                      def get(id: UserId): F[User]
+                    }
+
+                    type IOUserRepository  = UserRepository[IO]
+                    type ArgUserRepository = UserRepository[Context]
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait MessageSender[F[_]] {
+                      def send(from: User, to: User, msg: Message): F[Unit]
+                    }
+
+                    trait HttpHandler[F[_]] {
+                      def handle(req: Request): F[Response]
+                    }
+                    ```
+
+                    ---
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    import cats.Monad
+                    import cats.syntax.flatMap._
+                    import cats.syntax.functor._
+
+                    class MessageService[F[_]: Monad](
+                      sender: MessageSender[F],
+                      users: UserRepository[F]
+                    ) {
+                      def send(from: UserId, to: UserId, msg: Message): F[Unit] =
+                        for {
+                          fromUser <- users.get(from)
+                          toUser   <- users.get(to)
+                          _        <- sender.send(fromUser, toUser, msg)
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+
+                    Такая техника называется - _Tagless Final_
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait LoggerF[F[_]] {
+                      def info(input: String): F[Unit]
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class LoggingUserRepository[F[_]: Monad](
+                      delegate: UserRepository[F],
+                      logger: LoggerF[F]
+                    ) {
+                      def get(id: UserId): F[User] =
+                        for {
+                          _    <- logger.info(s"Getting user=$user")
+                          user <- delegate.get(id)
+                        } yield user
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    import cats.Monad
+                    import cats.syntax.flatMap._
+                    import cats.syntax.functor._
+
+                    class LoggingMessageSender[F[_]: Monad](
+                      delegate: MessageSender[F],
+                      logger: LoggerF[F]
+                    ) {
+                      def send(from: User, to: User, msg: Message): F[Unit] =
+                        for {
+                          _ <- logger.info(s"Sending msg=$msg")
+                          _ <- delegate.send(from, to, msg)
+                          _ <- logger.info(s"Sent msg=$msg")
+                        } yield ())
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    trait RequestParser[F[_]] {
+                      def parse(req: Request): F[(UserId, UserId, Message)]
+                    }
+
+                    class MessageHttpHandler[F[_]: Monad](
+                      parser: RequestParser[F]
+                      srv: MessageService[F]
+                    ) {
+                      def handle(req: Request): F[Response] =
+                        for {
+                          (from, to, msg) <- parser.parse(req)
+                          _ <- srv.send(from, to, msg)
+                        } yield Response.Ok
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    type Id[A] = A
+
+                    class SyncLogger extends LoggerF[Id] {
+                      def info(input: String): Id[Unit] =
+                        println(input)
+                    }
+
+                    class IOLogger extends LoggerF[IO] {
+                      def info(input: String): IO[Unit] =
+                        IO.println(input)
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-20]
+                    val users: UserRepository[IO] = ???
+                    val sender: MessageSender[IO] = ???
+                    val parser: RequestParser[IO] = ???
+
+                    val logger: LoggerF[IO] = new IOLogger
+
+                    val handler: HttpHandler[IO] =
+                      new MessageHttpHandler[IO](
+                        parser,
+                        new MessageService[IO](
+                          new LoggingUserRepository(users, logger),
+                          new LoggingMessageSender(sender, logger)
+                        )
+                      )
+                    ```
+
+                    ---
+
+                    Пример логов:
+
+                    ```bash
+                    Getting user=1
+                    Getting user=2
+                    Sending msg=Message(Privet)
+                    Sent msg=Message(Privet)
+                    ```
+
+                    ---
+
+                    Тайпкласс для получения контекста
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait WithContext[F[_], Context] {
+                      def ask: F[Context]
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ContextLoggerF[F[_]: Monad](
+                      logger: LoggerF[F]
+                    )(implicit context: WithContext[F, RequestContext]) {
+
+                      def info(input: String): F[Unit] =
+                        for {
+                          ctx <- context.ask
+                          _   <- logger
+                            .info(s"${ctx.mkString("[", ",", "]")} $input")
+                        } yield ()
+                    }
+                    ```
+
+                    ---
+
+                    Тайпкласс для получения контекста
+
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait WithProvide[F[_], G[_], Context] {
+                      def runContext[A](fa: F[A])(ctx: Context): G[A]
+                    }
+                    ```
+                    ---
+
+                    ```scala [1-15]
+                    implicit def derive[F[_], C]: WithProvide[ReaderT[F, C, *], F, C] =
+                      new WithProvide[ReaderT[F, C, *], F, C] {
+                        def runContext[A](fa: ReaderT[F, C, A])(ctx: C): F[A] =
+                          fa.run(ctx)
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    trait ContextParser[G[_]] {
+                      def parseContext(req: Request): G[RequestContext]
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class ContextHttpHandler[F[_], G[_]: Monad](
+                      contextParser: ContextParser[G]
+                      delegate: HttpHandler[F]
+                    )(implicit provide: WithProvide[F, G, RequestContext])
+                      extends HttpHandler[G] {
+
+                      def handler(req: Request): G[Response] =
+                        for {
+                          ctx <- parser.parseContext(req)
+                          r   <- provide.runContext(delegate.handle(req))(ctx)
+                        } yield r
+                    }
+                    ```
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    type ContextIO[B] = ReaderT[IO, RequestContext, B]
+
+                    class LiftLogger(ioLogger: LoggerF[IO]) extends
+                      LoggerF[ContextIO] = {
+
+                      def info(input: String): ContextIO[Unit] =
+                        ContextIO.lift(ioLogger.info(input))
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    class LiftUserRepository(
+                      users: UserRepository[IO]
+                    ) extends UserRepository[ContextIO] {
+                      def get(id: UserId): ContextIO[User] =
+                        ContextIO.lift(users.get(id))
+                    }
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala [1-15]
+                    val cUsers: UserRepository[ContextIO] =
+                      new LiftUserRepository(users)
+
+                    val cSender: MessageSender[ContextIO] =
+                      new LiftMessageSender(sender)
+
+                    val cParser: RequestParser[ContextIO] =
+                      new LiftRequestParser(parsers)
+
+                    val cLogger: LoggerF[ContextIO] =
+                      new ContextLogger[ContextIO](new LiftLogger(logger)))
+                    ```
+                    ---
+
+                    <img class="code-header">
+
+                    ```scala [1-15]s
+                    val contextParser: ContextParser[IO] = ???
+
+                    val ctxHandler = new ContextHttpHandler[IO, ContextIO](
+                      contextParser,
+                      new MessageHandler[ContextIO](
+                        cParser,
+                        new MessageService[ContextIO](
+                          new LoggingUserRepository(cUsers, cLogger),
+                          new LoggingMessageSender(cSender, cLogger)
+                        )
+                      )
+                    )
+
+                    ---
+
+                    Пример логов:
+
+                    ```bash
+                    [requestId -> 12345] Getting user=1
+                    [requestId -> 12345] Getting user=2
+                    [requestId -> 12345] Sending msg=Message(Privet)
+                    [requestId -> 12345] Sent msg=Message(Privet)
+                    ```
+
+                    ---
+
+                    На первый взгляд - куча бойлер плейта
+
+                    ---
+
+                    Но, при использовании _Tagless Final_ мы смогли добавить проброс контекст в приложение,
+                    не изменяя ни одной строчки уже существующего кода
+
+                    И операции с поднятием (`Lift`) интерфейсов на самом деле хорошо покрываются макросами и
+                    другими абстракциями
+
+                    ---
+
+                    Рассмотренные абстракции уже поставляются, как библиотеки и они не привязаны к конкретному рантайму.
+
+                    - __`cats`__ - предоставляет `Monad`
+                    - __`tofu-kernel`__ - предоставляет `WithContext`, `WithProvide`
+                    - __`tofu-logging`__ - предоставляет `Logging`
+
+                </textarea>
+            </section>
+        </section>
+        <section>
+            <section data-markdown>
+                <textarea data-template>
+                    ## Выводы
+
+                    Выбор инструмента упирается исходя из ваших потребностей
+
+                    ---
+
+                    - Если у вас не пугает привязка к рантайму
+                    - Если у вас есть потребность обогащать контекст во время выполнения запроса
+
+                    То стоит использовать библиотеки и их встроенные механизмы по работе с
+                    контекстом: `cats-effect`, `zio` и `monix`
+
+                    ---
+
+                    - Если вас пугает привязка к рантайму
+                    - Если у вас нет проблем с лишними аллокациями памяти
+                    - Если вам не нужно обогащать контекст
+
+                    То стоит использовать `Reader` монаду из библиотеки `cats`
+
+                    ---
+
+                    - Если вам снится в кошмарах привязка к рантайму,
+                    - Если вы хотите получить максимальную гибкость от кода
+
+                    То стоит использовать `Tagless Final` подход и тайпклассы из библиотеки `cats` и `tofu`
+
+                    ---
+
+                    ## Вопросы?
+                </textarea>
+            </section>
+        </section>
+    </div>
+</div>
+
+
+</body>
+</html>
