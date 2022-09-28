@@ -108,11 +108,8 @@ ul {
     margin-left: 20px;
 }
 
-#about-travel-img {
-    position: absolute;
-    bottom: 20px;
-    left: 0px;
-    width: 400px !important;
+#about-qr p  {
+    text-align: center;
 }
 
 #about-block {
